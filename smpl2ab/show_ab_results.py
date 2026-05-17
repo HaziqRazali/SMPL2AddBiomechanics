@@ -90,7 +90,7 @@ def extract_smpl_angles(poses_body_np):
 
 
 def load_id_npz(path):
-    """Load simulate_band_curl.py output .npz.
+    """Load resistance_band_id.py output .npz.
     Returns (data_dict, arm_cols, anchor (3,), wrist_pos (T,3))."""
     raw       = np.load(path, allow_pickle=True)
     col_names = [str(c) for c in raw['id_col_names']]
@@ -290,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument('--offset', type=float, default=0.0, help='X-axis offset (m) between SMPL and OpenSim for side-by-side view')
     parser.add_argument('--load_camera_settings', action='store_true', help='Load saved camera settings')
     parser.add_argument('--id_path', type=str, default=None,
-                        help='Path to band_sim.npz from simulate_band_curl.py (adds Joint Torques panel)')
+                        help='Path to band_id.npz from resistance_band_id.py (adds Joint Torques panel + band visualization)')
 
     args = parser.parse_args()
     

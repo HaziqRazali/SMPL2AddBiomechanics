@@ -26,14 +26,20 @@ if __name__ == "__main__":
     parser.add_argument('--body_model', help='Body model to use (smpl or smplx)', default='smpl', choices=['smpl', 'smplx'])
     parser.add_argument('--gender', type=str, default=None, choices=['female', 'male', 'neutral'])
     parser.add_argument('--z_up', action='store_true', help='Set the z axis up')
+    parser.add_argument('--gui', action='store_true', help='Open interactive viewer instead of exporting video')
+    parser.add_argument('--output', type=str, default=None, help='Path to save output video (ignored if --gui)')
+    parser.add_argument('--offset', type=float, default=0.0, help='X-axis offset (m) between SMPL and OpenSim for side-by-side view')
+    parser.add_argument('--load_camera_settings', action='store_true', help='Load saved camera settings')
      
     args = parser.parse_args()
     
     to_display = []
     
     if args.body_model == 'smpl':
-        body_model = 'smplh'
-    else :
+        # Full SMPLH models (with hand PCA) are not available on this system.
+        # Use plain SMPL — body pose is identical; hands stay in rest pose for AMASS 156-dim data.
+        body_model = 'smpl'
+    else:
         body_model = args.body_model
         
     if args.gender is None:
@@ -71,6 +77,8 @@ if __name__ == "__main__":
                                        ignore_geometry=True,
                                        z_up=args.z_up)
     
+    if args.offset != 0.0:
+        osim_seq.position[0] += args.offset
     to_display.append(osim_seq)
 
 
@@ -93,5 +101,12 @@ if __name__ == "__main__":
     if seq_smpl is not None:
         v.lock_to_node(seq_smpl, (2, 0.7, 2), smooth_sigma=5.0)
     v.playback_fps = fps
-    
-    v.run()
+
+    if args.load_camera_settings:
+        v.scene.camera.load_cam()
+
+    if args.gui or args.output is None:
+        v.run()
+    else:
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+        v.export_video(output_path=args.output, output_fps=fps)

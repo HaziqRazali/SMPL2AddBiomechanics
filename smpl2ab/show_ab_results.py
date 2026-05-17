@@ -6,9 +6,11 @@ import numpy as np
 import yaml
 import imgui
 
+from aitviewer.renderables.lines import Lines
 from aitviewer.renderables.osim import OSIMSequence
 from aitviewer.renderables.smpl import SMPLSequence
 from aitviewer.renderables.markers import Markers
+from aitviewer.renderables.spheres import Spheres
 from aitviewer.viewer import Viewer
 from aitviewer.models.smpl import SMPLLayer
 
@@ -87,16 +89,35 @@ def extract_smpl_angles(poses_body_np):
     return result
 
 
+def load_id_npz(path):
+    """Load simulate_band_curl.py output .npz.
+    Returns (data_dict, arm_cols, anchor (3,), wrist_pos (T,3))."""
+    raw       = np.load(path, allow_pickle=True)
+    col_names = [str(c) for c in raw['id_col_names']]
+    id_matrix = raw['id_data']   # (T, N)
+    data_dict = {col_names[i]: id_matrix[:, i] for i in range(len(col_names))}
+    arm_cols  = set(str(c) for c in raw['arm_col_names'])
+    anchor    = raw['anchor'].astype(np.float32)     # (3,)
+    wrist_pos = raw['wrist_pos'].astype(np.float32)  # (T, 3)
+    return data_dict, arm_cols, anchor, wrist_pos
+
+
 class JointAngleViewer(Viewer):
     """Viewer subclass that adds two imgui panels showing joint-angle plots."""
 
-    def __init__(self, osim_data, smpl_data, **kwargs):
+    def __init__(self, osim_data, smpl_data, id_data=None, id_arm_cols=None, **kwargs):
         super().__init__(**kwargs)
-        self._osim_data = osim_data  # {col_name: np.array[T] degrees}
-        self._smpl_data = smpl_data  # {dof_id:  np.array[T] degrees}
+        self._osim_data   = osim_data      # {col_name: np.array[T] degrees}
+        self._smpl_data   = smpl_data      # {dof_id:  np.array[T] degrees}
+        self._id_data     = id_data or {}  # {col_moment: np.array[T] N·m}
+        self._id_arm_cols = id_arm_cols or set()
         all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
         all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
-        self._checked = {k: False for k in all_osim + all_smpl}
+        all_id   = [f"{dof}_moment" for _, dofs in OSIM_GROUPS for dof in dofs]
+        self._checked = {k: False for k in all_osim + all_smpl + all_id}
+        for col in self._id_arm_cols:
+            if col in self._checked:
+                self._checked[col] = True
         self.gui_controls["joint_angles"] = self._gui_joint_angles
 
     # ------------------------------------------------------------------
@@ -112,7 +133,7 @@ class JointAngleViewer(Viewer):
         (0.60, 0.90, 0.30, 1.0),  # lime
     ]
 
-    def _combined_plot(self, dof_list, data_dict, uid, frame):
+    def _combined_plot(self, dof_list, data_dict, uid, frame, unit='°'):
         """Draw all currently-checked DOFs from dof_list superimposed on one plot."""
         series = [(d, data_dict[d]) for d in dof_list
                   if self._checked.get(d) and data_dict.get(d) is not None]
@@ -163,10 +184,10 @@ class JointAngleViewer(Viewer):
         for ci, (dof, vals) in enumerate(series):
             r, g, b, a = self._SERIES_COLORS[ci % len(self._SERIES_COLORS)]
             cur = float(vals[min(frame, len(vals) - 1)])
-            imgui.text_colored(f"{dof}: {cur:.1f}°", r, g, b, a)
+            imgui.text_colored(f"{dof}: {cur:.1f}{unit}", r, g, b, a)
 
     # ------------------------------------------------------------------
-    def _plot_row(self, dof_id, values, frame):
+    def _plot_row(self, dof_id, values, frame, unit='°'):
         """Draw one checkbox row; if checked, draw plot + vertical cursor."""
         _, self._checked[dof_id] = imgui.checkbox(f"{dof_id}##{dof_id}", self._checked[dof_id])
         if self._checked[dof_id] and values is not None and len(values) > 1:
@@ -176,7 +197,7 @@ class JointAngleViewer(Viewer):
             imgui.plot_lines(
                 f"##{dof_id}_pl",
                 values.astype(np.float32),
-                overlay_text=f"{cur:.1f}°",
+                overlay_text=f"{cur:.1f}{unit}",
                 scale_min=float(values.min()),
                 scale_max=float(values.max()),
                 graph_size=(w, 40),
@@ -230,6 +251,29 @@ class JointAngleViewer(Viewer):
                 imgui.tree_pop()
         imgui.end()
 
+        # ---- Joint Torques panel (only when ID data is loaded) ----
+        if self._id_data:
+            imgui.set_next_window_position(W - 990, 50, imgui.FIRST_USE_EVER)
+            imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
+            expanded, _ = imgui.begin("Joint Torques [N\u00b7m]")
+            if expanded:
+                for group_name, dofs in OSIM_GROUPS:
+                    group_keys = [f"{dof}_moment" for dof in dofs
+                                  if f"{dof}_moment" in self._id_data]
+                    if not group_keys:
+                        continue
+                    if imgui.tree_node(group_name):
+                        for key in group_keys:
+                            self._plot_row(key, self._id_data.get(key), frame, unit=' N\u00b7m')
+                        imgui.tree_pop()
+                imgui.separator()
+                imgui.set_next_item_open(False, imgui.ONCE)
+                if imgui.tree_node("Superimposed"):
+                    all_id = [f"{dof}_moment" for _, dofs in OSIM_GROUPS for dof in dofs]
+                    self._combined_plot(all_id, self._id_data, "id", frame, unit=' N\u00b7m')
+                    imgui.tree_pop()
+            imgui.end()
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -245,7 +289,9 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, default=None, help='Path to save output video (ignored if --gui)')
     parser.add_argument('--offset', type=float, default=0.0, help='X-axis offset (m) between SMPL and OpenSim for side-by-side view')
     parser.add_argument('--load_camera_settings', action='store_true', help='Load saved camera settings')
-     
+    parser.add_argument('--id_path', type=str, default=None,
+                        help='Path to band_sim.npz from simulate_band_curl.py (adds Joint Torques panel)')
+
     args = parser.parse_args()
     
     to_display = []
@@ -310,8 +356,30 @@ if __name__ == "__main__":
     # Display in the viewer
     osim_data = parse_mot(args.mot_path) if args.mot_path else {}
     smpl_data = extract_smpl_angles(seq_smpl.poses_body.detach().cpu().numpy()) if seq_smpl is not None else {}
+    if args.id_path:
+        id_data, id_arm_cols, band_anchor, band_wrist = load_id_npz(args.id_path)
+        # ── Resistance band visualization ──────────────────────────────────
+        T = len(band_wrist)
+        # Anchor: small red sphere at the fixed floor attachment point
+        anchor_pts = np.tile(band_anchor[np.newaxis, np.newaxis], (T, 1, 1))  # (T,1,3)
+        to_display.append(Spheres(anchor_pts, radius=0.03,
+                                  color=(0.9, 0.15, 0.15, 1.0), name='Band anchor'))
+        # Wrist attachment: orange sphere tracking the hand
+        wrist_pts = band_wrist[:, np.newaxis, :]  # (T,1,3)
+        to_display.append(Spheres(wrist_pts, radius=0.025,
+                                  color=(1.0, 0.55, 0.0, 1.0), name='Band attachment'))
+        # Band line: yellow cylinder from anchor to wrist
+        band_lines = np.stack([
+            np.tile(band_anchor, (T, 1)),  # (T,3) anchor repeated
+            band_wrist,                    # (T,3) wrist
+        ], axis=1)  # (T,2,3)
+        to_display.append(Lines(band_lines, r_base=0.005,
+                                color=(1.0, 0.9, 0.1, 0.85), mode='lines',
+                                name='Resistance band'))
+    else:
+        id_data, id_arm_cols = {}, set()
 
-    v = JointAngleViewer(osim_data, smpl_data)
+    v = JointAngleViewer(osim_data, smpl_data, id_data=id_data, id_arm_cols=id_arm_cols)
     v.run_animations = True
     v.scene.camera.position = np.array([10.0, 2.5, 0.0])
     v.scene.add(*to_display)

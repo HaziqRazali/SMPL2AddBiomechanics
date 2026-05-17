@@ -91,15 +91,15 @@ def extract_smpl_angles(poses_body_np):
 
 def load_id_npz(path):
     """Load resistance_band_id.py output .npz.
-    Returns (data_dict, arm_cols, anchor (3,), wrist_pos (T,3))."""
+    Returns (data_dict, arm_cols, anchor_pos (3,), limb_pos (T,3))."""
     raw       = np.load(path, allow_pickle=True)
     col_names = [str(c) for c in raw['id_col_names']]
     id_matrix = raw['id_data']   # (T, N)
     data_dict = {col_names[i]: id_matrix[:, i] for i in range(len(col_names))}
     arm_cols  = set(str(c) for c in raw['arm_col_names'])
-    anchor    = raw['anchor'].astype(np.float32)     # (3,)
-    wrist_pos = raw['wrist_pos'].astype(np.float32)  # (T, 3)
-    return data_dict, arm_cols, anchor, wrist_pos
+    anchor    = raw['anchor_pos'].astype(np.float32)   # (3,)
+    limb_pos  = raw['limb_pos'].astype(np.float32)     # (T, 3)
+    return data_dict, arm_cols, anchor, limb_pos
 
 
 class JointAngleViewer(Viewer):
@@ -357,21 +357,21 @@ if __name__ == "__main__":
     osim_data = parse_mot(args.mot_path) if args.mot_path else {}
     smpl_data = extract_smpl_angles(seq_smpl.poses_body.detach().cpu().numpy()) if seq_smpl is not None else {}
     if args.id_path:
-        id_data, id_arm_cols, band_anchor, band_wrist = load_id_npz(args.id_path)
+        id_data, id_arm_cols, band_anchor, band_limb = load_id_npz(args.id_path)
         # ── Resistance band visualization ──────────────────────────────────
-        T = len(band_wrist)
-        # Anchor: small red sphere at the fixed floor attachment point
+        T = len(band_limb)
+        # Anchor: small red sphere at the fixed attachment point (wall/floor)
         anchor_pts = np.tile(band_anchor[np.newaxis, np.newaxis], (T, 1, 1))  # (T,1,3)
         to_display.append(Spheres(anchor_pts, radius=0.03,
                                   color=(0.9, 0.15, 0.15, 1.0), name='Band anchor'))
-        # Wrist attachment: orange sphere tracking the hand
-        wrist_pts = band_wrist[:, np.newaxis, :]  # (T,1,3)
-        to_display.append(Spheres(wrist_pts, radius=0.025,
+        # Limb attachment: orange sphere tracking the limb end
+        limb_pts = band_limb[:, np.newaxis, :]  # (T,1,3)
+        to_display.append(Spheres(limb_pts, radius=0.025,
                                   color=(1.0, 0.55, 0.0, 1.0), name='Band attachment'))
-        # Band line: yellow cylinder from anchor to wrist
+        # Band line: yellow cylinder from anchor to limb attachment
         band_lines = np.stack([
             np.tile(band_anchor, (T, 1)),  # (T,3) anchor repeated
-            band_wrist,                    # (T,3) wrist
+            band_limb,                     # (T,3) limb attachment
         ], axis=1)  # (T,2,3)
         to_display.append(Lines(band_lines, r_base=0.005,
                                 color=(1.0, 0.9, 0.1, 0.85), mode='lines',

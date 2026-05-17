@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import pickle
+import shutil
 import tqdm
 import yaml
 
@@ -42,6 +43,11 @@ def create_data_folder(subject_name, subject_trials, output_folder, osim_model_p
     # Create subject folder
     subject_folder = os.path.join(output_folder, subject_name)
     os.makedirs(subject_folder, exist_ok=True)
+
+    # Copy the unscaled generic OSim model — required by the AddBiomechanics engine.
+    unscaled_osim_dest = os.path.join(subject_folder, 'unscaled_generic.osim')
+    if not os.path.exists(unscaled_osim_dest):
+        shutil.copy(osim_model_path, unscaled_osim_dest)
 
     # Create trial folder
     trial_folder = os.path.join(subject_folder, 'trials')

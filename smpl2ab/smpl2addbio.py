@@ -119,7 +119,10 @@ def create_data_folder(subject_name, subject_trials, output_folder, osim_model_p
         seq_name = seq.split('/')[-1].split('.')[0]
         
         # Generate the synthetic markers for this sequence
-        synth_mocap_file = os.path.join(trial_folder, seq_name+'.trc')
+        # Engine expects trials/{seq_name}/markers.trc (subdirectory per trial)
+        trial_seq_folder = os.path.join(trial_folder, seq_name)
+        os.makedirs(trial_seq_folder, exist_ok=True)
+        synth_mocap_file = os.path.join(trial_seq_folder, 'markers.trc')
 
         if not os.path.exists(synth_mocap_file) or force_recompute:
            

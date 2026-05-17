@@ -4,6 +4,7 @@ import argparse
 import os
 import numpy as np
 import yaml
+import imgui
 
 from aitviewer.renderables.osim import OSIMSequence
 from aitviewer.renderables.smpl import SMPLSequence
@@ -14,6 +15,220 @@ from aitviewer.models.smpl import SMPLLayer
 import config as cg
 from smpl2ab.markers.smpl_markers import SmplMarker
 from smpl2ab.utils.smpl_utils import load_smpl_seq
+
+
+# ---------------------------------------------------------------------------
+# Joint-angle panel configuration
+# ---------------------------------------------------------------------------
+
+# OpenSim .mot DOF groups  (column names from the IK output)
+OSIM_GROUPS = [
+    ("Hip R",      ["hip_flexion_r",  "hip_adduction_r",  "hip_rotation_r"]),
+    ("Hip L",      ["hip_flexion_l",  "hip_adduction_l",  "hip_rotation_l"]),
+    ("Knee",       ["knee_angle_r",   "knee_angle_l"]),
+    ("Ankle",      ["ankle_angle_r",  "ankle_angle_l"]),
+    ("Shoulder R", ["shoulder_r_x",   "shoulder_r_y",     "shoulder_r_z"]),
+    ("Shoulder L", ["shoulder_l_x",   "shoulder_l_y",     "shoulder_l_z"]),
+    ("Elbow",      ["elbow_flexion_r","elbow_flexion_l"]),
+    ("Wrist R",    ["wrist_flexion_r","wrist_deviation_r"]),
+    ("Wrist L",    ["wrist_flexion_l","wrist_deviation_l"]),
+]
+
+# SMPL body-joint groups: (display_name, [(dof_id, body_joint_idx, axis_idx), ...])
+# body_joint_idx is 0-based into poses_body (joint 1 = left hip = idx 0, etc.)
+SMPL_GROUPS = [
+    ("Hip R",      [("hip_r_x",   1, 0), ("hip_r_y",   1, 1), ("hip_r_z",   1, 2)]),
+    ("Hip L",      [("hip_l_x",   0, 0), ("hip_l_y",   0, 1), ("hip_l_z",   0, 2)]),
+    ("Knee R",     [("knee_r_x",  4, 0), ("knee_r_y",  4, 1), ("knee_r_z",  4, 2)]),
+    ("Knee L",     [("knee_l_x",  3, 0), ("knee_l_y",  3, 1), ("knee_l_z",  3, 2)]),
+    ("Ankle R",    [("ankle_r_x", 7, 0), ("ankle_r_y", 7, 1), ("ankle_r_z", 7, 2)]),
+    ("Ankle L",    [("ankle_l_x", 6, 0), ("ankle_l_y", 6, 1), ("ankle_l_z", 6, 2)]),
+    ("Shoulder R", [("shr_x",    16, 0), ("shr_y",    16, 1), ("shr_z",    16, 2)]),
+    ("Shoulder L", [("shl_x",    15, 0), ("shl_y",    15, 1), ("shl_z",    15, 2)]),
+    ("Elbow R",    [("elbow_r_x",18, 0), ("elbow_r_y",18, 1), ("elbow_r_z",18, 2)]),
+    ("Elbow L",    [("elbow_l_x",17, 0), ("elbow_l_y",17, 1), ("elbow_l_z",17, 2)]),
+    ("Wrist R",    [("wrist_r_x",20, 0), ("wrist_r_y",20, 1), ("wrist_r_z",20, 2)]),
+    ("Wrist L",    [("wrist_l_x",19, 0), ("wrist_l_y",19, 1), ("wrist_l_z",19, 2)]),
+]
+
+
+def parse_mot(mot_path):
+    """Parse an OpenSim .mot file → dict {col_name: np.array[T] in degrees}."""
+    with open(mot_path) as f:
+        lines = f.readlines()
+    in_degrees = False
+    header_end = 0
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if "indegrees" in low and "yes" in low:
+            in_degrees = True
+        if line.strip() == "endheader":
+            header_end = i + 1
+            break
+    cols = lines[header_end].strip().split("\t")
+    data = {c: [] for c in cols[1:]}  # skip 'time'
+    for line in lines[header_end + 1:]:
+        parts = line.strip().split()
+        if len(parts) < len(cols):
+            continue
+        for j, col in enumerate(cols[1:], 1):
+            data[col].append(float(parts[j]))
+    scale = 1.0 if in_degrees else np.degrees(1.0)
+    return {k: np.array(v) * scale for k, v in data.items()}
+
+
+def extract_smpl_angles(poses_body_np):
+    """poses_body_np: (T, 69) numpy float array.
+    Returns dict {dof_id: np.array[T] in degrees} for joints in SMPL_GROUPS."""
+    result = {}
+    for _group, dofs in SMPL_GROUPS:
+        for dof_id, bi, di in dofs:
+            result[dof_id] = np.degrees(poses_body_np[:, bi * 3 + di])
+    return result
+
+
+class JointAngleViewer(Viewer):
+    """Viewer subclass that adds two imgui panels showing joint-angle plots."""
+
+    def __init__(self, osim_data, smpl_data, **kwargs):
+        super().__init__(**kwargs)
+        self._osim_data = osim_data  # {col_name: np.array[T] degrees}
+        self._smpl_data = smpl_data  # {dof_id:  np.array[T] degrees}
+        all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
+        all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
+        self._checked = {k: False for k in all_osim + all_smpl}
+        self.gui_controls["joint_angles"] = self._gui_joint_angles
+
+    # ------------------------------------------------------------------
+    # Distinct colours for the superimposed plot
+    _SERIES_COLORS = [
+        (1.0, 0.35, 0.35, 1.0),  # red
+        (0.35, 0.85, 0.35, 1.0),  # green
+        (0.35, 0.55, 1.0,  1.0),  # blue
+        (1.0, 0.80, 0.20, 1.0),  # yellow
+        (0.90, 0.40, 0.90, 1.0),  # purple
+        (0.25, 0.90, 0.90, 1.0),  # cyan
+        (1.0, 0.60, 0.20, 1.0),  # orange
+        (0.60, 0.90, 0.30, 1.0),  # lime
+    ]
+
+    def _combined_plot(self, dof_list, data_dict, uid, frame):
+        """Draw all currently-checked DOFs from dof_list superimposed on one plot."""
+        series = [(d, data_dict[d]) for d in dof_list
+                  if self._checked.get(d) and data_dict.get(d) is not None]
+        if not series:
+            imgui.text_colored("(tick DOFs above to show them here)", 0.5, 0.5, 0.5, 1.0)
+            return
+
+        T    = max(len(v) for _, v in series)
+        vmin = min(float(v.min()) for _, v in series)
+        vmax = max(float(v.max()) for _, v in series)
+        vrng = vmax - vmin or 1.0
+
+        w  = max(imgui.get_content_region_available_width(), 50.0)
+        h  = 100.0
+        imgui.invisible_button(f"##comb_{uid}", w, h)
+        rmin = imgui.get_item_rect_min()
+        rmax = imgui.get_item_rect_max()
+        pw   = rmax[0] - rmin[0]
+        ph   = rmax[1] - rmin[1]
+
+        dl = imgui.get_window_draw_list()
+        dl.add_rect_filled(rmin[0], rmin[1], rmax[0], rmax[1],
+                           imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 1.0))
+        dl.add_rect(rmin[0], rmin[1], rmax[0], rmax[1],
+                    imgui.get_color_u32_rgba(0.45, 0.45, 0.45, 1.0))
+
+        for ci, (dof, vals) in enumerate(series):
+            r, g, b, a = self._SERIES_COLORS[ci % len(self._SERIES_COLORS)]
+            col = imgui.get_color_u32_rgba(r, g, b, a)
+            n   = len(vals)
+            pts = []
+            for xi in range(n):
+                x = rmin[0] + (xi / max(n - 1, 1)) * pw
+                y = rmax[1] - ((float(vals[xi]) - vmin) / vrng) * ph
+                pts.append((x, y))
+            # draw as connected line segments
+            for xi in range(len(pts) - 1):
+                dl.add_line(pts[xi][0], pts[xi][1],
+                            pts[xi+1][0], pts[xi+1][1], col, 1.2)
+
+        # vertical cursor
+        t = frame / max(T - 1, 1)
+        cx = rmin[0] + t * pw
+        dl.add_line(cx, rmin[1], cx, rmax[1],
+                    imgui.get_color_u32_rgba(1.0, 0.85, 0.0, 1.0), 1.5)
+
+        # inline legend
+        for ci, (dof, vals) in enumerate(series):
+            r, g, b, a = self._SERIES_COLORS[ci % len(self._SERIES_COLORS)]
+            cur = float(vals[min(frame, len(vals) - 1)])
+            imgui.text_colored(f"{dof}: {cur:.1f}°", r, g, b, a)
+
+    # ------------------------------------------------------------------
+    def _plot_row(self, dof_id, values, frame):
+        """Draw one checkbox row; if checked, draw plot + vertical cursor."""
+        _, self._checked[dof_id] = imgui.checkbox(f"{dof_id}##{dof_id}", self._checked[dof_id])
+        if self._checked[dof_id] and values is not None and len(values) > 1:
+            T = len(values)
+            cur = float(values[min(frame, T - 1)])
+            w = max(imgui.get_content_region_available_width(), 50)
+            imgui.plot_lines(
+                f"##{dof_id}_pl",
+                values.astype(np.float32),
+                overlay_text=f"{cur:.1f}°",
+                scale_min=float(values.min()),
+                scale_max=float(values.max()),
+                graph_size=(w, 40),
+            )
+            # Vertical cursor line at current frame
+            rmin = imgui.get_item_rect_min()
+            rmax = imgui.get_item_rect_max()
+            t = frame / max(T - 1, 1)
+            x = rmin[0] + t * (rmax[0] - rmin[0])
+            dl = imgui.get_window_draw_list()
+            dl.add_line(x, rmin[1], x, rmax[1],
+                        imgui.get_color_u32_rgba(1.0, 0.85, 0.0, 1.0), 1.5)
+
+    def _gui_joint_angles(self):
+        frame = self.scene.current_frame_id
+        W = self.window_size[0]
+
+        # ---- OpenSim IK panel ----
+        imgui.set_next_window_position(W - 330, 50, imgui.FIRST_USE_EVER)
+        imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
+        expanded, _ = imgui.begin("OpenSim IK Angles")
+        if expanded:
+            for group_name, dofs in OSIM_GROUPS:
+                if imgui.tree_node(group_name):
+                    for dof in dofs:
+                        self._plot_row(dof, self._osim_data.get(dof), frame)
+                    imgui.tree_pop()
+            imgui.separator()
+            imgui.set_next_item_open(False, imgui.ONCE)
+            if imgui.tree_node("Superimposed"):
+                all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
+                self._combined_plot(all_osim, self._osim_data, "osim", frame)
+                imgui.tree_pop()
+        imgui.end()
+
+        # ---- SMPL angles panel ----
+        imgui.set_next_window_position(W - 660, 50, imgui.FIRST_USE_EVER)
+        imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
+        expanded, _ = imgui.begin("SMPL Angles")
+        if expanded:
+            for group_name, dofs in SMPL_GROUPS:
+                if imgui.tree_node(group_name):
+                    for dof_id, *_ in dofs:
+                        self._plot_row(dof_id, self._smpl_data.get(dof_id), frame)
+                    imgui.tree_pop()
+            imgui.separator()
+            imgui.set_next_item_open(False, imgui.ONCE)
+            if imgui.tree_node("Superimposed"):
+                all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
+                self._combined_plot(all_smpl, self._smpl_data, "smpl", frame)
+                imgui.tree_pop()
+        imgui.end()
 
 if __name__ == "__main__":
 
@@ -43,8 +258,8 @@ if __name__ == "__main__":
         body_model = args.body_model
         
     if args.gender is None:
-        smpl_data = load_smpl_seq(args.smpl_motion_path)
-        gender = smpl_data['gender']
+        _npz = load_smpl_seq(args.smpl_motion_path)
+        gender = _npz['gender']
     else:
         gender = args.gender
         
@@ -93,7 +308,10 @@ if __name__ == "__main__":
     
 
     # Display in the viewer
-    v = Viewer()
+    osim_data = parse_mot(args.mot_path) if args.mot_path else {}
+    smpl_data = extract_smpl_angles(seq_smpl.poses_body.detach().cpu().numpy()) if seq_smpl is not None else {}
+
+    v = JointAngleViewer(osim_data, smpl_data)
     v.run_animations = True
     v.scene.camera.position = np.array([10.0, 2.5, 0.0])
     v.scene.add(*to_display)

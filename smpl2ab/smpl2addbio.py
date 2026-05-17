@@ -65,7 +65,14 @@ def create_data_folder(subject_name, subject_trials, output_folder, osim_model_p
     smpl_model = SMPL(gender = seq_data['gender'], model_type=body_model)
     
     # Select the marker set to use
-    if osim_model_path == cg.osim_model_path and (marker_dict_path == cg.bsm_markers_on_smpl_path or marker_dict_path == cg.bsm_markers_on_smplx_path):
+    # Use os.path.realpath() to normalise paths before comparing — cg paths may contain
+    # un-resolved ".." components while caller passes fully-expanded absolute paths.
+    _osim_real  = os.path.realpath(osim_model_path)
+    _bsm_osims  = {os.path.realpath(cg.osim_model_path)}
+    _bsm_dicts  = {os.path.realpath(cg.bsm_markers_on_smpl_path),
+                   os.path.realpath(cg.bsm_markers_on_smplx_path),
+                   os.path.realpath(cg.bsm_markers_bony_path)}
+    if _osim_real in _bsm_osims and os.path.realpath(marker_dict_path) in _bsm_dicts:
         # Use the default BSM model and marker set
         # from markers.marker_sets import bsm_marker_set
         # marker_set_name='bsm_smpl' if not use_smplx else 'bsm_smplx'

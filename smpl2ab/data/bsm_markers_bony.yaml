@@ -1,0 +1,89 @@
+# Anatomical ("bony") marker subset — 57 markers on identifiable bony prominences.
+# This is a subset of bsm_markers.yaml (105 markers).
+# Used with --markers=bony in run_smpl2bsm.sh.
+#
+# Protocol roughly follows standard biomechanics lab conventions
+# (PlugInGait / Cleveland Clinic / BSM paper bony subset).
+
+# Head (6)
+LFHD: 136    # left frontal bone
+RFHD: 3648   # right frontal bone
+LBHD: 395    # left occipital bone
+RBHD: 3897   # right occipital bone
+NOSE: 410    # nasal bone
+THD:  414    # top of head (parietal)
+
+# Trunk (5)
+C7:   1306   # 7th cervical vertebra spinous process
+CLAV: 3169   # clavicle / sternoclavicular joint
+LUMB: 3023   # lumbar (approx L4/L5 spinous)
+RIBL: 1485   # left rib
+RIBR: 6289   # right rib
+
+# Pelvis (6)
+LFWT: 3156   # left ASIS
+RFWT: 6573   # right ASIS
+LBWT: 3099   # left PSIS
+RBWT: 6522   # right PSIS
+LHAP: 780    # left greater trochanter
+RHAP: 4266   # right greater trochanter
+
+# Shoulder / scapula (4)
+LSHO: 1239   # left acromion
+RSHO: 4724   # right acromion
+LSCA: 2886   # left scapular spine
+RSCA: 4219   # right scapular spine
+
+# Elbow (4)
+LELB: 1657   # left lateral epicondyle
+RELB: 5112   # right lateral epicondyle
+LELS: 3013   # left medial epicondyle
+RELS: 6471   # right medial epicondyle
+
+# Forearm / wrist (6)
+LFRM: 1688   # left radius (mid-shaft)
+RFRM: 5155   # right radius (mid-shaft)
+LWRA: 2112   # left radial styloid
+LWRB: 2108   # left ulnar styloid
+RWRA: 5573   # right radial styloid
+RWRB: 5568   # right ulnar styloid
+
+# Fingers (2)
+LFIN: 2214   # left 2nd metacarpal head
+RFIN: 5675   # right 2nd metacarpal head
+
+# Hip posterior (2)
+LHBA: 1389   # left ischial tuberosity / posterior hip
+RHBA: 4862   # right ischial tuberosity / posterior hip
+
+# Knee (4)
+LKNE: 1010   # left lateral femoral epicondyle
+RKNE: 4495   # right lateral femoral epicondyle
+LKNI: 1148   # left medial femoral epicondyle
+RKNI: 4634   # right medial femoral epicondyle
+
+# Tibia / shin (6)
+LSHN: 1083   # left tibial shaft (anterior)
+RSHN: 4580   # right tibial shaft (anterior)
+LTIB: 1076   # left tibia bony
+RTIB: 4560   # right tibia bony
+LTIA: 1178   # left tibial anterior (Gerdy's tubercle area)
+RTIA: 4664   # right tibial anterior
+
+# Ankle (4)
+LANK: 3328   # left lateral malleolus
+RANK: 6727   # right lateral malleolus
+LAKI: 3199   # left medial malleolus
+RAKI: 6599   # right medial malleolus
+
+# Heel (2)
+LHEE: 3387   # left calcaneus (posterior)
+RHEE: 6786   # right calcaneus (posterior)
+
+# Foot / toe (6)
+LTOE: 3216   # left 2nd metatarsal head
+RTOE: 6618   # right 2nd metatarsal head
+LMT5: 3303   # left 5th metatarsal head
+RMT5: 6703   # right 5th metatarsal head
+LTIC: 3321   # left fibula head / lateral tibial plateau
+RTIC: 6721   # right fibula head / lateral tibial plateau

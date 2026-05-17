@@ -10,6 +10,7 @@ osim_geometry_folder = os.path.join(package_directory, '../models/bsm/Geometry')
 # Marker sets
 bsm_markers_on_smpl_path = os.path.join(package_directory, "data/bsm_markers.yaml")
 bsm_markers_on_smplx_path = os.path.join(package_directory, "data/bsm_markers_smplx.yaml")
+bsm_markers_bony_path = os.path.join(package_directory, "data/bsm_markers_bony.yaml")
 
 mesh_vertices_path = os.path.join(package_directory, 'measurements/smpl_measurement_vertices.yaml' )    
 mesh_vertices_smplx_path = os.path.join(package_directory, 'measurements/smpl_measurement_vertices_smplx.yaml' )    

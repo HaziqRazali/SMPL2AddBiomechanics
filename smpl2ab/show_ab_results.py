@@ -61,9 +61,10 @@ def parse_mot(mot_path):
     in_degrees = False
     header_end = 0
     for i, line in enumerate(lines):
-        low = line.lower()
-        if "indegrees" in low and "yes" in low:
-            in_degrees = True
+        low = line.lower().replace(" ", "")
+        # Match only the 'inDegrees=yes' header field, not the comment line that mentions both words.
+        if low.startswith("indegrees="):
+            in_degrees = low.strip() == "indegrees=yes"
         if line.strip() == "endheader":
             header_end = i + 1
             break
@@ -99,26 +100,70 @@ def load_id_npz(path):
     arm_cols  = set(str(c) for c in raw['arm_col_names'])
     anchor    = raw['anchor_pos'].astype(np.float32)   # (3,)
     limb_pos  = raw['limb_pos'].astype(np.float32)     # (T, 3)
-    return data_dict, arm_cols, anchor, limb_pos
+    arm       = str(raw['arm']) if 'arm' in raw else None  # 'left' / 'right'
+    return data_dict, arm_cols, anchor, limb_pos, arm
 
 
 class JointAngleViewer(Viewer):
     """Viewer subclass that adds two imgui panels showing joint-angle plots."""
 
-    def __init__(self, osim_data, smpl_data, id_data=None, id_arm_cols=None, **kwargs):
+    def __init__(self, osim_data, smpl_data, id_data=None, id_arm_cols=None,
+                 focus_side=None, panels_in_video=False, **kwargs):
         super().__init__(**kwargs)
         self._osim_data   = osim_data      # {col_name: np.array[T] degrees}
         self._smpl_data   = smpl_data      # {dof_id:  np.array[T] degrees}
         self._id_data     = id_data or {}  # {col_moment: np.array[T] N·m}
         self._id_arm_cols = id_arm_cols or set()
+        self._focus_side  = focus_side     # 'l' / 'r' / None
+        self._panels_in_video = panels_in_video
+        self._video_mode  = False          # True while drawing panels into an exported frame
         all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
         all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
         all_id   = [f"{dof}_moment" for _, dofs in OSIM_GROUPS for dof in dofs]
         self._checked = {k: False for k in all_osim + all_smpl + all_id}
-        for col in self._id_arm_cols:
-            if col in self._checked:
-                self._checked[col] = True
+        self._open_groups = set()
+        if focus_side:
+            # Only the exercising arm: elbow angle + elbow/shoulder torques, groups expanded.
+            s = focus_side
+            for k in [f"elbow_flexion_{s}", f"elbow_flexion_{s}_moment",
+                      f"shoulder_{s}_x_moment", f"shoulder_{s}_y_moment", f"shoulder_{s}_z_moment"]:
+                self._checked[k] = True
+            self._open_groups = {"Elbow", f"Shoulder {s.upper()}"}
+        else:
+            for col in self._id_arm_cols:
+                if col in self._checked:
+                    self._checked[col] = True
         self.gui_controls["joint_angles"] = self._gui_joint_angles
+
+    def render(self, time, frame_time, export=False, transparent_background=False):
+        super().render(time, frame_time, export=export, transparent_background=transparent_background)
+        if export and self._panels_in_video:
+            # aitviewer's export skips the GUI; draw only our panels into the frame buffer.
+            self._video_mode = True
+            imgui.new_frame()
+            self._gui_joint_angles()
+            imgui.render()
+            self.imgui.render(imgui.get_draw_data())
+            self._video_mode = False
+
+    def _tree_node(self, group_name):
+        if group_name in self._open_groups:
+            imgui.set_next_item_open(True, imgui.ONCE)
+        return imgui.tree_node(group_name)
+
+    def _begin_panel(self, title, default_x, slot):
+        """Open a panel. In video mode panels are pinned to the right edge, stacked."""
+        if self._video_mode:
+            W, H = self.window_size
+            pw, angle_h = 460, 170  # angle panel holds one plot; torque panel gets the rest
+            y, ph = (20, angle_h) if slot == 0 else (40 + angle_h, H - angle_h - 60)
+            imgui.set_next_window_position(W - pw - 20, y, imgui.ALWAYS)
+            imgui.set_next_window_size(pw, ph, imgui.ALWAYS)
+            imgui.set_next_window_collapsed(False, imgui.ALWAYS)
+        else:
+            imgui.set_next_window_position(default_x, 50, imgui.FIRST_USE_EVER)
+            imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
+        return imgui.begin(title)
 
     # ------------------------------------------------------------------
     # Distinct colours for the superimposed plot
@@ -200,7 +245,7 @@ class JointAngleViewer(Viewer):
                 overlay_text=f"{cur:.1f}{unit}",
                 scale_min=float(values.min()),
                 scale_max=float(values.max()),
-                graph_size=(w, 40),
+                graph_size=(w, 90 if self._video_mode else 40),
             )
             # Vertical cursor line at current frame
             rmin = imgui.get_item_rect_min()
@@ -216,62 +261,69 @@ class JointAngleViewer(Viewer):
         W = self.window_size[0]
 
         # ---- OpenSim IK panel ----
-        imgui.set_next_window_position(W - 330, 50, imgui.FIRST_USE_EVER)
-        imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
-        expanded, _ = imgui.begin("OpenSim IK Angles")
+        expanded, _ = self._begin_panel("OpenSim IK Angles", W - 330, slot=0)
         if expanded:
             for group_name, dofs in OSIM_GROUPS:
-                if imgui.tree_node(group_name):
+                if self._video_mode and not any(self._checked.get(d) for d in dofs):
+                    continue
+                if self._tree_node(group_name):
                     for dof in dofs:
+                        if self._video_mode and not self._checked.get(dof):
+                            continue
                         self._plot_row(dof, self._osim_data.get(dof), frame)
                     imgui.tree_pop()
-            imgui.separator()
-            imgui.set_next_item_open(False, imgui.ONCE)
-            if imgui.tree_node("Superimposed"):
-                all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
-                self._combined_plot(all_osim, self._osim_data, "osim", frame)
-                imgui.tree_pop()
+            if not self._video_mode:
+                imgui.separator()
+                imgui.set_next_item_open(False, imgui.ONCE)
+                if imgui.tree_node("Superimposed"):
+                    all_osim = [dof for _, dofs in OSIM_GROUPS for dof in dofs]
+                    self._combined_plot(all_osim, self._osim_data, "osim", frame)
+                    imgui.tree_pop()
         imgui.end()
 
-        # ---- SMPL angles panel ----
-        imgui.set_next_window_position(W - 660, 50, imgui.FIRST_USE_EVER)
-        imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
-        expanded, _ = imgui.begin("SMPL Angles")
-        if expanded:
-            for group_name, dofs in SMPL_GROUPS:
-                if imgui.tree_node(group_name):
-                    for dof_id, *_ in dofs:
-                        self._plot_row(dof_id, self._smpl_data.get(dof_id), frame)
+        # ---- SMPL angles panel (left out of videos: axis-angle components, not clinical angles) ----
+        if not self._video_mode:
+            imgui.set_next_window_position(W - 660, 50, imgui.FIRST_USE_EVER)
+            imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
+            expanded, _ = imgui.begin("SMPL Angles")
+            if expanded:
+                for group_name, dofs in SMPL_GROUPS:
+                    if imgui.tree_node(group_name):
+                        for dof_id, *_ in dofs:
+                            self._plot_row(dof_id, self._smpl_data.get(dof_id), frame)
+                        imgui.tree_pop()
+                imgui.separator()
+                imgui.set_next_item_open(False, imgui.ONCE)
+                if imgui.tree_node("Superimposed"):
+                    all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
+                    self._combined_plot(all_smpl, self._smpl_data, "smpl", frame)
                     imgui.tree_pop()
-            imgui.separator()
-            imgui.set_next_item_open(False, imgui.ONCE)
-            if imgui.tree_node("Superimposed"):
-                all_smpl = [dof for _, dofs in SMPL_GROUPS for dof, *_ in dofs]
-                self._combined_plot(all_smpl, self._smpl_data, "smpl", frame)
-                imgui.tree_pop()
-        imgui.end()
+            imgui.end()
 
         # ---- Joint Torques panel (only when ID data is loaded) ----
         if self._id_data:
-            imgui.set_next_window_position(W - 990, 50, imgui.FIRST_USE_EVER)
-            imgui.set_next_window_size(310, 620, imgui.FIRST_USE_EVER)
-            expanded, _ = imgui.begin("Joint Torques [N\u00b7m]")
+            expanded, _ = self._begin_panel("Joint Torques [N\u00b7m]", W - 990, slot=1)
             if expanded:
                 for group_name, dofs in OSIM_GROUPS:
                     group_keys = [f"{dof}_moment" for dof in dofs
                                   if f"{dof}_moment" in self._id_data]
                     if not group_keys:
                         continue
-                    if imgui.tree_node(group_name):
+                    if self._video_mode and not any(self._checked.get(k) for k in group_keys):
+                        continue
+                    if self._tree_node(group_name):
                         for key in group_keys:
+                            if self._video_mode and not self._checked.get(key):
+                                continue
                             self._plot_row(key, self._id_data.get(key), frame, unit=' N\u00b7m')
                         imgui.tree_pop()
-                imgui.separator()
-                imgui.set_next_item_open(False, imgui.ONCE)
-                if imgui.tree_node("Superimposed"):
-                    all_id = [f"{dof}_moment" for _, dofs in OSIM_GROUPS for dof in dofs]
-                    self._combined_plot(all_id, self._id_data, "id", frame, unit=' N\u00b7m')
-                    imgui.tree_pop()
+                if not self._video_mode:
+                    imgui.separator()
+                    imgui.set_next_item_open(False, imgui.ONCE)
+                    if imgui.tree_node("Superimposed"):
+                        all_id = [f"{dof}_moment" for _, dofs in OSIM_GROUPS for dof in dofs]
+                        self._combined_plot(all_id, self._id_data, "id", frame, unit=' N\u00b7m')
+                        imgui.tree_pop()
             imgui.end()
 
 if __name__ == "__main__":
@@ -291,6 +343,13 @@ if __name__ == "__main__":
     parser.add_argument('--load_camera_settings', action='store_true', help='Load saved camera settings')
     parser.add_argument('--id_path', type=str, default=None,
                         help='Path to band_id.npz from resistance_band_id.py (adds Joint Torques panel + band visualization)')
+    parser.add_argument('--panels_in_video', action='store_true',
+                        help='Draw the joint angle / torque panels into the exported video (right edge of the frame)')
+    parser.add_argument('--hide_smpl', action='store_true',
+                        help='Hide the SMPL body mesh so only the OpenSim skeleton (and markers) are shown')
+    parser.add_argument('--focus_side', type=str, default=None, choices=['left', 'right'],
+                        help="Only show/expand this arm's elbow angle and elbow+shoulder torques "
+                             "(default: the 'arm' stored in --id_path)")
 
     args = parser.parse_args()
     
@@ -357,7 +416,7 @@ if __name__ == "__main__":
     osim_data = parse_mot(args.mot_path) if args.mot_path else {}
     smpl_data = extract_smpl_angles(seq_smpl.poses_body.detach().cpu().numpy()) if seq_smpl is not None else {}
     if args.id_path:
-        id_data, id_arm_cols, band_anchor, band_limb = load_id_npz(args.id_path)
+        id_data, id_arm_cols, band_anchor, band_limb, id_arm = load_id_npz(args.id_path)
         # ── Resistance band visualization ──────────────────────────────────
         T = len(band_limb)
         # Anchor: small red sphere at the fixed attachment point (wall/floor)
@@ -377,12 +436,19 @@ if __name__ == "__main__":
                                 color=(1.0, 0.9, 0.1, 0.85), mode='lines',
                                 name='Resistance band'))
     else:
-        id_data, id_arm_cols = {}, set()
+        id_data, id_arm_cols, id_arm = {}, set(), None
 
-    v = JointAngleViewer(osim_data, smpl_data, id_data=id_data, id_arm_cols=id_arm_cols)
+    side = args.focus_side or id_arm
+    focus_side = {'left': 'l', 'right': 'r'}.get(side)
+    v = JointAngleViewer(osim_data, smpl_data, id_data=id_data, id_arm_cols=id_arm_cols,
+                         focus_side=focus_side, panels_in_video=args.panels_in_video)
     v.run_animations = True
     v.scene.camera.position = np.array([10.0, 2.5, 0.0])
     v.scene.add(*to_display)
+    if args.hide_smpl:
+        # Keep the sequence (markers and the camera follow it) but don't draw the body mesh.
+        # Must come after scene.add(), which resets every node to enabled.
+        seq_smpl.enabled = False
     
     if seq_smpl is not None:
         v.lock_to_node(seq_smpl, (2, 0.7, 2), smooth_sigma=5.0)
@@ -395,4 +461,5 @@ if __name__ == "__main__":
         v.run()
     else:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+        v._init_scene()  # run() normally does this; export_video() alone leaves scene.ctx unset
         v.export_video(output_path=args.output, output_fps=fps)

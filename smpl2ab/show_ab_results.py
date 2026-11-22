@@ -6,6 +6,17 @@ import numpy as np
 import yaml
 import imgui
 
+# Point aitviewer at this repo's models/ so the script works from any clone location
+# (aitvconfig.yaml holds absolute paths for one machine). Must run before importing
+# aitviewer.renderables.osim, which reads skel_models at import time. AITVRC still wins.
+from aitviewer.configuration import CONFIG as C
+if "AITVRC" not in os.environ:
+    _models = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+    if os.path.isdir(os.path.join(_models, "smpl")):
+        C.update_conf({"smplx_models": _models})
+    if os.path.exists(os.path.join(_models, "bsm", "bsm.osim")):
+        C.update_conf({"skel_models": os.path.join(_models, "bsm")})
+
 from aitviewer.renderables.lines import Lines
 from aitviewer.renderables.osim import OSIMSequence
 from aitviewer.renderables.smpl import SMPLSequence
